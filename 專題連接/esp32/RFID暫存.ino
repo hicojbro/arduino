@@ -6,24 +6,23 @@
 #include <ArduinoJson.h>
 
 // RFID pins for ESP32
-#define RST_PIN         22    // Reset pin
-#define SS_PIN          21    // SS/SDA pin
-#define SCK_PIN         18    // SCK pin
-#define MISO_PIN        19    // MISO pin
-#define MOSI_PIN        23    // MOSI pin
+#define RST_PIN         22    
+#define SS_PIN          21    
+#define SCK_PIN         18    
+#define MISO_PIN        19    
+#define MOSI_PIN        23    
 
 // Network credentials
 const char* ssid = "LAPTOP-H200NENE 7672";
 const char* password = "11024211";
 
 // API endpoint
-const char* API_URL = "http://192.168.137.1:3001/data";
+const char* API_URL = "http://192.168.137.1:3002/card";
 
 MFRC522 mfrc522(SS_PIN, RST_PIN);
 String lastCardUID = "";
-unsigned long lastCardTime = 0;
-const unsigned long CARD_TIMEOUT = 2000;  // 延長至 5000 毫秒（5 秒）
-const unsigned long CARD_DEBOUNCE = 9999;  // 去抖動 500 毫秒
+bool cardDetected = false;
+const unsigned long CHECK_INTERVAL = 1000; 
 
 // Debug LED
 #define LED_PIN 2
@@ -42,7 +41,7 @@ bool initRFID() {
     SPI.end();
     delay(100);
     SPI.begin(SCK_PIN, MISO_PIN, MOSI_PIN, SS_PIN);
-    SPI.setFrequency(4000000); // 4MHz
+    SPI.setFrequency(4000000);
     digitalWrite(RST_PIN, LOW);
     delay(100);
     digitalWrite(RST_PIN, HIGH);
@@ -154,35 +153,49 @@ void updateCardStatus(String uid, bool isPresent) {
     }
 }
 
-void checkCardPresence() {
+bool isCardStillPresent() {
     if (!mfrc522.PICC_IsNewCardPresent()) {
-        // 如果沒有新卡片,檢查是否超時
-        if (lastCardUID != "" && millis() - lastCardTime > CARD_TIMEOUT) {
-            // 卡片超時,更新狀態為 true
-            updateCardStatus(lastCardUID, true);
-            lastCardUID = "";
-            blinkLED(2);
-        }
-        return;
+        return false;
     }
-
+    
     if (!mfrc522.PICC_ReadCardSerial()) {
-        return;
+        return false;
     }
-
+    
     String currentUID = getCardUID();
-    unsigned long now = millis();
-    if (currentUID != lastCardUID && now - lastCardTime > CARD_DEBOUNCE) {
-        // 新卡片,更新狀態為 false
-        updateCardStatus(currentUID, false);
-        lastCardUID = currentUID;
-        lastCardTime = now;
-    }
     mfrc522.PICC_HaltA();
     mfrc522.PCD_StopCrypto1();
+    
+    return currentUID == lastCardUID;
+}
+
+void checkCardPresence() {
+    if (!cardDetected) {
+        // 等待新卡片
+        if (mfrc522.PICC_IsNewCardPresent() && mfrc522.PICC_ReadCardSerial()) {
+            String currentUID = getCardUID();
+            lastCardUID = currentUID;
+            cardDetected = true;
+            updateCardStatus(currentUID, false);
+            Serial.println("偵測到新卡片，等待卡片離開...");
+            mfrc522.PICC_HaltA();
+            mfrc522.PCD_StopCrypto1();
+        }
+    } else {
+        // 檢查卡片是否已經離開
+        if (!isCardStillPresent()) {
+            delay(500);  // 等待一小段時間再次確認
+            if (!isCardStillPresent()) {  // 再次確認卡片確實離開
+                updateCardStatus(lastCardUID, true);
+                Serial.println("卡片已離開，準備偵測新卡片...");
+                lastCardUID = "";
+                cardDetected = false;
+            }
+        }
+    }
 }
 
 void loop() {
     checkCardPresence();
-    delay(50);
+    delay(CHECK_INTERVAL);
 }
